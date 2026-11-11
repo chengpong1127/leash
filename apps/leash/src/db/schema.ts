@@ -43,6 +43,8 @@ export const challenges = sqliteTable(
     returnUrl: text("return_url").notNull(),
     status: text("status").$type<ChallengeStatus>().notNull().default("pending"),
     proofJti: text("proof_jti"),
+    approvedAt: timestamp("approved_at"),
+    approvedBy: text("approved_by"),
     createdAt: timestamp("created_at").notNull(),
     expiresAt: timestamp("expires_at").notNull(),
   },
@@ -71,4 +73,94 @@ export const events = sqliteTable(
     index("events_counter_idx").on(t.siteId, t.siteUserId, t.action, t.outcome, t.createdAt),
     index("events_user_idx").on(t.userId, t.createdAt),
   ],
+);
+
+/** Leash's EdDSA key for signing proof JWTs. Generated on first use, then reused. */
+export const signingKeys = sqliteTable("signing_keys", {
+  id: text("id").primaryKey(),
+  privateJwk: text("private_jwk", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+  publicJwk: text("public_jwk", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp("created_at").notNull(),
+});
+
+/**
+ * One WebAuthn ceremony started by Leash itself (not by Better Auth): approving a challenge,
+ * saving settings, un-pausing. The WebAuthn challenge is SHA-256(nonce + purpose + what is
+ * being authorized), so an assertion is fresh, single-use, and bound to one specific thing.
+ */
+export const ceremonies = sqliteTable("ceremonies", {
+  id: text("id").primaryKey(),
+  nonce: text("nonce").notNull(),
+  kind: text("kind").$type<"assert" | "register">().notNull(),
+  purpose: text("purpose").notNull(),
+  createdAt: timestamp("created_at").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+});
+
+// ── Better Auth tables (users, sessions, passkeys). Property names must match Better Auth's model names. ──
+
+export const user = sqliteTable("user", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: integer("email_verified", { mode: "boolean" }).notNull().default(false),
+  image: text("image"),
+  createdAt: timestamp("created_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+});
+
+export const session = sqliteTable("session", {
+  id: text("id").primaryKey(),
+  expiresAt: timestamp("expires_at").notNull(),
+  token: text("token").notNull().unique(),
+  createdAt: timestamp("created_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+});
+
+export const account = sqliteTable("account", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull(),
+  providerId: text("provider_id").notNull(),
+  userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  accessToken: text("access_token"),
+  refreshToken: text("refresh_token"),
+  idToken: text("id_token"),
+  accessTokenExpiresAt: timestamp("access_token_expires_at"),
+  refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+  scope: text("scope"),
+  password: text("password"),
+  createdAt: timestamp("created_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+});
+
+export const verification = sqliteTable("verification", {
+  id: text("id").primaryKey(),
+  identifier: text("identifier").notNull(),
+  value: text("value").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").notNull(),
+  updatedAt: timestamp("updated_at").notNull(),
+});
+
+/** Written by Better Auth's passkey plugin and by Leash's own first-time setup, in the same format. */
+export const passkey = sqliteTable(
+  "passkey",
+  {
+    id: text("id").primaryKey(),
+    name: text("name"),
+    publicKey: text("public_key").notNull(), // base64
+    userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    credentialID: text("credential_id").notNull(), // base64url
+    counter: integer("counter").notNull(),
+    deviceType: text("device_type").notNull(),
+    backedUp: integer("backed_up", { mode: "boolean" }).notNull(),
+    transports: text("transports"),
+    createdAt: timestamp("created_at"),
+    aaguid: text("aaguid"),
+  },
+  (t) => [index("passkey_user_idx").on(t.userId), uniqueIndex("passkey_credential_unique").on(t.credentialID)],
 );
