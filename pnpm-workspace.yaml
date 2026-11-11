@@ -1,0 +1,9 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Native / postinstall builds we explicitly allow.
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  sharp: false

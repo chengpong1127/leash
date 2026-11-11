@@ -1,0 +1,21 @@
+{
+  "name": "leash-monorepo",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter \"./apps/*\" run dev",
+    "test": "NODE_ENV=test vitest run",
+    "typecheck": "pnpm -r run typecheck",
+    "db:generate": "pnpm --filter @leash/app run db:generate",
+    "db:seed": "pnpm -r --workspace-concurrency=1 --if-present run db:seed",
+    "demo:reset": "pnpm -r --workspace-concurrency=1 --if-present run demo:reset"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
+  }
+}
