@@ -1,4 +1,5 @@
-import type { Manifest, Mode, NormalizedAction, NormalizedConstraint, Period } from "./types";
+import { z } from "zod";
+import type { Manifest, NormalizedAction, NormalizedConstraint } from "./types";
 
 export class ManifestError extends Error {
   constructor(message: string) {
@@ -7,56 +8,72 @@ export class ManifestError extends Error {
   }
 }
 
+/** Action and constraint names. Names starting with "_" (e.g. "__link__") are reserved. */
 const NAME = /^[a-z][a-z0-9_]{0,63}$/;
-const MODES: Mode[] = ["auto", "human"];
-const PERIODS: Period[] = ["day", "month"];
 
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
+const text = z
+  .string("must be a non-empty string")
+  .max(200, "must be at most 200 characters")
+  .refine((s) => s.trim() !== "", "must be a non-empty string");
+const limit = z.number("must be a non-negative number").nonnegative("must be a non-negative number");
+const period = z.enum(["day", "month"], 'must be "day" or "month"');
 
-function limit(v: unknown, where: string, field: string): number | undefined {
-  if (v === undefined) return undefined;
-  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
-    throw new ManifestError(`${where}: "${field}" must be a non-negative number`);
-  }
-  return v;
-}
+const constraintBase = { label: text, default: limit.optional(), ceiling: limit.optional() };
 
-function text(v: unknown, where: string, field: string): string {
-  if (typeof v !== "string" || v.trim() === "" || v.length > 200) {
-    throw new ManifestError(`${where}: "${field}" must be a non-empty string`);
-  }
-  return v;
-}
-
-function normalizeConstraint(raw: unknown, where: string): NormalizedConstraint {
-  if (!isObject(raw)) throw new ManifestError(`${where} must be an object`);
-  const label = text(raw.label, where, "label");
-  // Missing default → 0; missing ceiling → the default. Both fail safe.
-  const def = limit(raw.default, where, "default") ?? 0;
-  const ceiling = limit(raw.ceiling, where, "ceiling") ?? def;
-  if (def > ceiling) {
-    throw new ManifestError(`${where}: default (${def}) must be <= ceiling (${ceiling})`);
-  }
-  const base = { label, default: def, ceiling };
-
-  switch (raw.type) {
-    case "max":
-      return { ...base, type: "max", param: text(raw.param, where, "param") };
-    case "sum_per_period":
-    case "count_per_period": {
-      if (!PERIODS.includes(raw.period as Period)) {
-        throw new ManifestError(`${where}: "period" must be one of ${PERIODS.join(", ")}`);
-      }
-      const period = raw.period as Period;
-      return raw.type === "sum_per_period"
-        ? { ...base, type: "sum_per_period", param: text(raw.param, where, "param"), period }
-        : { ...base, type: "count_per_period", period };
+/** Discriminated on `type`. To support e.g. `allowlist` later, add a member here (and in types.ts / evaluate.ts). */
+const constraintSchema = z
+  .discriminatedUnion(
+    "type",
+    [
+      z.object({ type: z.literal("max"), param: text, ...constraintBase }),
+      z.object({ type: z.literal("sum_per_period"), param: text, period, ...constraintBase }),
+      z.object({ type: z.literal("count_per_period"), period, ...constraintBase }),
+    ],
+    'must be "max", "sum_per_period" or "count_per_period"',
+  )
+  .transform((c, ctx): NormalizedConstraint => {
+    // Missing default → 0; missing ceiling → the default. Both fail safe.
+    const def = c.default ?? 0;
+    const ceiling = c.ceiling ?? def;
+    if (def > ceiling) {
+      ctx.addIssue({ code: "custom", message: `default (${def}) must be <= ceiling (${ceiling})` });
     }
-    default:
-      throw new ManifestError(`${where}: unknown constraint type ${JSON.stringify(raw.type)}`);
+    return { ...c, default: def, ceiling };
+  });
+
+const actionSchema = z
+  .object(
+    {
+      label: text,
+      mode: z.enum(["auto", "human"], 'must be "auto" or "human"').optional(),
+      userConfigurable: z.boolean("must be a boolean").optional(),
+      constraints: z.record(z.string(), constraintSchema, "must be an object").optional(),
+    },
+    "must be an object",
+  )
+  .transform(
+    (a): NormalizedAction => ({
+      label: a.label,
+      mode: a.mode ?? "human", // missing mode fails safe
+      userConfigurable: a.userConfigurable !== false,
+      constraints: a.constraints ?? {},
+    }),
+  );
+
+const actionsSchema = z.record(z.string(), actionSchema, "actions must be an object");
+
+/** Turn a zod issue into one line a site developer can act on. */
+function describe(issue: z.core.$ZodIssue): string {
+  const [action, section, constraint, field] = issue.path.map(String);
+  if (action === undefined) return issue.message;
+  let where = `action "${action}"`;
+  if (section === "constraints" && constraint !== undefined) {
+    where += ` constraint "${constraint}"`;
+    if (field !== undefined) where += `: "${field}"`;
+  } else if (section !== undefined) {
+    where += `: "${section}"`;
   }
+  return `${where} ${issue.message}`.replace(/" (default \()/, '": $1');
 }
 
 /**
@@ -64,35 +81,20 @@ function normalizeConstraint(raw: unknown, where: string): NormalizedConstraint 
  * values: missing `mode` → "human", missing `default` → 0. Throws ManifestError.
  */
 export function normalizeManifest(rawActions: unknown): Manifest {
-  if (!isObject(rawActions)) throw new ManifestError("actions must be an object");
-
-  const actions: Record<string, NormalizedAction> = {};
-  for (const [name, raw] of Object.entries(rawActions)) {
-    const where = `action "${name}"`;
-    if (!NAME.test(name)) {
-      throw new ManifestError(`${where}: names must match ${NAME} (names starting with "_" are reserved)`);
+  // Names are checked up front so the message can name the offending key.
+  if (typeof rawActions === "object" && rawActions !== null && !Array.isArray(rawActions)) {
+    for (const [name, action] of Object.entries(rawActions)) {
+      if (!NAME.test(name)) {
+        throw new ManifestError(`action "${name}": names must match ${NAME} (names starting with "_" are reserved)`);
+      }
+      const constraints = (action as { constraints?: unknown } | null)?.constraints;
+      for (const key of Object.keys(typeof constraints === "object" && constraints !== null ? constraints : {})) {
+        if (!NAME.test(key)) throw new ManifestError(`action "${name}": invalid constraint name "${key}"`);
+      }
     }
-    if (!isObject(raw)) throw new ManifestError(`${where} must be an object`);
-    if (raw.mode !== undefined && !MODES.includes(raw.mode as Mode)) {
-      throw new ManifestError(`${where}: "mode" must be "auto" or "human"`);
-    }
-    if (raw.userConfigurable !== undefined && typeof raw.userConfigurable !== "boolean") {
-      throw new ManifestError(`${where}: "userConfigurable" must be a boolean`);
-    }
-    if (raw.constraints !== undefined && !isObject(raw.constraints)) {
-      throw new ManifestError(`${where}: "constraints" must be an object`);
-    }
-    const constraints: Record<string, NormalizedConstraint> = {};
-    for (const [key, c] of Object.entries(raw.constraints ?? {})) {
-      if (!NAME.test(key)) throw new ManifestError(`${where}: invalid constraint name "${key}"`);
-      constraints[key] = normalizeConstraint(c, `${where} constraint "${key}"`);
-    }
-    actions[name] = {
-      label: text(raw.label, where, "label"),
-      mode: (raw.mode as Mode | undefined) ?? "human",
-      userConfigurable: raw.userConfigurable !== false,
-      constraints,
-    };
   }
-  return { actions };
+
+  const result = actionsSchema.safeParse(rawActions);
+  if (!result.success) throw new ManifestError(result.error.issues.map(describe).join("; "));
+  return { actions: result.data };
 }

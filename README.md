@@ -38,6 +38,9 @@ Other commands: `pnpm test`, `pnpm typecheck`, `pnpm demo:reset`, `pnpm db:gener
   and in-memory test databases all get the same schema.
 - **Demo sites use plain template strings** (auto-escaping `html` tag) and `better-sqlite3` directly,
   with their own password login — no Leash dependency for login, and fewer dependencies.
+- **zod for shape validation.** The manifest is validated with a zod schema (discriminated union on
+  constraint `type`), and every Leash API request body gets a zod schema. Policy evaluation stays plain
+  code — it is logic, not shape checking.
 - **Period boundaries use server-local time** ("today" starts at local midnight, "this month" on the 1st).
 - **Limits are inclusive**: a $100 purchase passes a $100 per-transaction limit.
 - **Fail-safe policy rules beyond the spec:** a constraint added to a manifest after the user linked
