@@ -1,39 +1,63 @@
-import { getDb, schema } from "@/db";
+import { Bot, Fingerprint, SlidersHorizontal } from "lucide-react";
+import { headers } from "next/headers";
+import { AuthButtons } from "@/components/auth-buttons";
+import { Dashboard } from "@/components/dashboard";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getDb } from "@/db";
+import { getSessionUser } from "@/lib/auth";
+import { getDashboard } from "@/lib/views";
 
 export const dynamic = "force-dynamic";
 
-export default function HomePage() {
-  const sites = getDb().select().from(schema.sites).all();
+const POINTS = [
+  { icon: Bot, title: "Agents welcome", text: "Sites stop guessing who is a bot. Any logged-in activity is treated as possibly your agent." },
+  { icon: SlidersHorizontal, title: "Your limits", text: "Small, routine actions pass silently, up to the spending and frequency limits you choose." },
+  { icon: Fingerprint, title: "Your fingerprint", text: "Anything bigger needs a fresh passkey tap bound to that one action. An agent cannot press Touch ID." },
+];
+
+export default async function HomePage() {
+  const user = await getSessionUser(await headers());
+
+  if (user) {
+    return (
+      <div className="space-y-8">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Dashboard</h1>
+          <p className="mt-1 text-muted-foreground">What happened in your accounts, and what is waiting for you.</p>
+        </div>
+        <Dashboard initial={getDashboard(getDb(), user.id)} />
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-8">
-      <section>
-        <h1 className="text-3xl font-semibold tracking-tight">Your agents, on a leash.</h1>
-        <p className="mt-3 max-w-2xl text-slate-600">
-          Websites assume any logged-in activity might be an AI agent. Small actions pass silently; anything beyond
-          the limits you set needs a fresh passkey tap from you.
+    <div className="space-y-12">
+      <section className="max-w-2xl space-y-5 pt-6">
+        <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">Your agents, on a leash.</h1>
+        <p className="text-lg text-muted-foreground">
+          Leash lets your AI agents act for you on websites, within limits you set. Anything beyond those limits needs
+          a fresh passkey tap from you — proof that a human is really there.
         </p>
+        <AuthButtons />
+        <p className="text-sm text-muted-foreground">Passkey only. No password, no email.</p>
       </section>
 
-      <section>
-        <h2 className="text-sm font-medium uppercase tracking-wide text-slate-500">Connected sites</h2>
-        {sites.length === 0 ? (
-          <p className="mt-3 rounded-xl border border-dashed border-slate-300 bg-white p-6 text-slate-600">
-            No sites yet. Run <code className="rounded bg-slate-100 px-1.5 py-0.5">pnpm db:seed</code>.
-          </p>
-        ) : (
-          <ul className="mt-3 grid gap-3 sm:grid-cols-2">
-            {sites.map((site) => (
-              <li key={site.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <p className="font-medium">{site.name}</p>
-                <p className="text-sm text-slate-500">{site.origin}</p>
-                <p className="mt-2 text-sm text-slate-600">
-                  {Object.keys(site.manifest.actions).length} protected action(s) declared
-                </p>
-              </li>
-            ))}
-          </ul>
-        )}
+      <section aria-label="How it works">
+        <ul className="grid gap-4 sm:grid-cols-3">
+          {POINTS.map(({ icon: Icon, title, text }) => (
+            <li key={title}>
+              <Card className="h-full">
+                <CardHeader>
+                  <Icon className="size-5 text-muted-foreground" aria-hidden="true" />
+                  <CardTitle>{title}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-muted-foreground">{text}</p>
+                </CardContent>
+              </Card>
+            </li>
+          ))}
+        </ul>
       </section>
     </div>
   );
